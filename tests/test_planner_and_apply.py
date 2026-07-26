@@ -21,6 +21,9 @@ class RecordingCli(BwCli):
         self.deleted: list[str] = []
         self.folders_created: list[str] = []
         self.synced = 0
+        # Default: vault holds no passkeys. Overridden per-test. Set here so the
+        # suite never spawns a real `bw` subprocess.
+        self.passkey_item_ids = lambda: set()
 
     def create_item(self, payload):
         self.created.append(payload)
@@ -265,6 +268,77 @@ class TestApplyExecution(PlanTestCase):
         path.write_text(json.dumps(data))
         with self.assertRaises(ApplyError):
             load_plan(path)
+
+
+class TestPasskeyGuard(PlanTestCase):
+    """A passkey cannot be re-created, so deleting one is the one unrecoverable
+    outcome. The guard reads the live vault because exports have been known to
+    under-report passkeys (bitwarden/clients#6925)."""
+
+    def _plan_two_identical(self):
+        return self.run_plan(
+            items=[
+                bw_login("keeper", "GitHub", "u", "pw", ["https://github.com"]),
+                bw_login("doomed", "GitHub dup", "u", "pw", ["https://github.com"]),
+            ]
+        )
+
+    def test_aborts_when_a_doomed_item_has_a_live_passkey(self):
+        plan = self._plan_two_identical()
+        doomed = [a["item_id"] for a in plan["actions"] if a["op"] == "delete"]
+        self.assertTrue(doomed)
+
+        cli = RecordingCli()
+        cli.passkey_item_ids = lambda: set(doomed)  # export under-reported it
+        with self.assertRaises(ApplyError) as ctx:
+            execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
+
+        message = str(ctx.exception)
+        self.assertIn("ABORTED", message)
+        self.assertIn("passkey", message)
+        self.assertIn("bitwarden/clients#6925", message)
+        # Nothing may have been mutated before the abort.
+        self.assertEqual(cli.deleted, [])
+        self.assertEqual(cli.created, [])
+        self.assertEqual(cli.edited, [])
+
+    def test_proceeds_when_passkey_is_on_the_item_being_kept(self):
+        plan = self._plan_two_identical()
+        kept = [a["kept_item_id"] for a in plan["actions"] if a["op"] == "delete"]
+        cli = RecordingCli()
+        cli.passkey_item_ids = lambda: set(kept)
+        execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
+        self.assertEqual(len(cli.deleted), 1)
+
+    def test_unqueryable_vault_does_not_block_a_dry_run(self):
+        plan = self._plan_two_identical()
+        cli = RecordingCli()
+        cli.passkey_item_ids = lambda: None  # e.g. dry run with no session
+        execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
+        self.assertEqual(len(cli.deleted), 1)
+
+    def test_planner_keeps_the_passkey_copy_despite_every_other_signal(self):
+        """The passkey copy is oldest, has no TOTP, no notes and fewest URLs."""
+        plan = self.run_plan(
+            items=[
+                bw_login(
+                    "pk", "GitHub", "u", "pw", ["https://github.com"],
+                    passkey=True, revision="2020-01-01T00:00:00.000Z",
+                ),
+                bw_login(
+                    "newer", "GitHub dup", "u", "pw",
+                    ["https://github.com", "https://gist.github.com"],
+                    totp="SEED", notes="note", revision="2026-01-01T00:00:00.000Z",
+                ),
+            ]
+        )
+        deletes = [a["item_id"] for a in plan["actions"] if a["op"] == "delete"]
+        self.assertEqual(deletes, ["newer"])
+        update = [a for a in plan["actions"] if a["op"] == "update"][0]
+        self.assertEqual(update["item_id"], "pk")
+        # The richer duplicate's metadata is rescued onto the passkey item.
+        self.assertTrue(update["take_totp_from"])
+        self.assertTrue(update["take_notes_from"])
 
 
 class TestEndToEndIdempotence(PlanTestCase):

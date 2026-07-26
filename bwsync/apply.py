@@ -119,6 +119,36 @@ class BwCli:
             args.append("--permanent")
         self.run(args)
 
+    def passkey_item_ids(self) -> set[str] | None:
+        """Item ids that hold a passkey, read from the LIVE vault.
+
+        Deliberately not taken from the export file. `bw export` has shipped
+        versions that emit an empty `fido2Credentials` array even when passkeys
+        exist (bitwarden/clients#6925). A passkey invisible to planning would let
+        its item lose the keeper tiebreak and be deleted — the one outcome here
+        that is genuinely unrecoverable, since a passkey's private key cannot be
+        re-created from anything else.
+
+        Returns None when the vault could not be queried, so callers can tell
+        "no passkeys" apart from "could not check".
+        """
+        try:
+            raw = self.run(["list", "items"])
+        except (ApplyError, OSError):
+            return None
+        try:
+            items = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        found: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            login = item.get("login")
+            if isinstance(login, dict) and login.get("fido2Credentials") and item.get("id"):
+                found.add(item["id"])
+        return found
+
     def list_folders(self) -> dict[str, str]:
         if self.dry_run and not self.session:
             return {}
@@ -222,6 +252,56 @@ def _login_payload(cred: Credential, uris: list[str], folder_id: str | None) -> 
     }
 
 
+def preflight_passkey_guard(
+    plan: dict[str, Any], cli: BwCli, echo: Callable[[str], None] = print
+) -> None:
+    """Refuse to delete any item that the live vault says holds a passkey.
+
+    Runs before the first mutation, so a mismatch costs nothing. A hit means the
+    export used for planning under-reported passkeys, which invalidates the
+    keeper choice for that whole group — so this aborts rather than silently
+    skipping the delete and continuing with a plan we no longer trust.
+    """
+    deletes = {
+        action["item_id"]: action
+        for action in plan["actions"]
+        if action["op"] == "delete" and action.get("item_id")
+    }
+    if not deletes:
+        return
+
+    live_passkeys = cli.passkey_item_ids()
+    if live_passkeys is None:
+        echo(
+            "  note: could not query the live vault for passkeys; skipping that "
+            "cross-check (it runs for real during --confirm)."
+        )
+        return
+
+    hits = [deletes[item_id] for item_id in deletes if item_id in live_passkeys]
+    if not hits:
+        echo(f"  passkey cross-check passed ({len(live_passkeys)} passkey item(s) in vault).")
+        return
+
+    listed = "\n".join(
+        f"    {action['item_id']}  {action['name'] or '(unnamed)'}  [{action['label']}]"
+        for action in hits[:10]
+    )
+    more = f"\n    …and {len(hits) - 10} more" if len(hits) > 10 else ""
+    raise ApplyError(
+        f"ABORTED — the plan would delete {len(hits)} item(s) that hold a passkey "
+        f"in your live vault:\n{listed}{more}\n\n"
+        f"Nothing has been changed.\n\n"
+        f"This means the export used for planning did not report those passkeys, so "
+        f"the wrong copy was chosen to keep. Known cause: `bw export` has shipped "
+        f"versions that write an empty fido2Credentials array "
+        f"(bitwarden/clients#6925).\n\n"
+        f"Fix: re-export your vault from the WEB VAULT or BROWSER EXTENSION rather "
+        f"than the CLI (Tools -> Export vault, .json, no file password), then re-run "
+        f"`bwsync plan` and review the new plan."
+    )
+
+
 def execute(
     plan: dict[str, Any],
     cli: BwCli,
@@ -235,6 +315,9 @@ def execute(
     if not cli.dry_run:
         echo("Syncing vault before changes…")
         cli.sync()
+
+    # Must precede every mutation: an abort here must cost nothing.
+    preflight_passkey_guard(plan, cli, echo)
 
     folder_ids = cli.list_folders()
 

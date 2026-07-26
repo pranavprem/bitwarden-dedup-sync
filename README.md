@@ -29,6 +29,10 @@ Everything follows from that:
 - Before a duplicate is deleted, anything it uniquely holds — a **TOTP seed**, a
   note, a custom field, an extra URL — is copied onto the item being kept. Old
   duplicates are frequently the only place a 2FA seed still lives.
+- **The copy holding a passkey always wins.** Passkey rank sits second in the
+  keeper score, above TOTP, notes, URL count and recency — so if three copies of
+  a login differ only in that one has a passkey, that is the one kept and the
+  others are deleted. See *Passkeys* below for the guard that backs this up.
 - Deletes go to the Bitwarden **Trash**, which is recoverable in-product for 30
   days. `--permanent` opts out; don't use it on the first run.
 
@@ -224,6 +228,34 @@ Deleted items sit in the Bitwarden **Trash** (web vault → Trash → Restore).
 If something has gone badly wrong, `~/pwork/vault.json` from step 3 is a
 complete snapshot of the vault before any change.
 
+## Passkeys
+
+Deleting a passkey is the one genuinely unrecoverable outcome here: unlike a
+password, its private key cannot be reconstructed from any other copy. So it
+gets treated as a special case.
+
+**Selection.** Passkeys live in `login.fido2Credentials` in Bitwarden `.json`
+exports (CSV exports omit them entirely, which is one reason the vault input
+must be JSON). A copy holding a passkey outranks every other signal except
+"already in the vault", so it is kept and its passkey-less duplicates are
+deleted — with their TOTP seeds, notes and URLs merged onto it first.
+
+**The guard.** That selection is only as good as the export. Some `bw export`
+versions write an **empty** `fido2Credentials` array even when passkeys exist
+([bitwarden/clients#6925](https://github.com/bitwarden/clients/issues/6925)) —
+which would make a passkey invisible to planning, let its item lose the
+tiebreak, and delete it.
+
+So `apply` does not trust the export. Before making any change, it queries your
+**live vault** via `bw list items` for the real set of passkey-holding item IDs.
+If the plan would delete any of them, it aborts having changed nothing, and
+tells you to re-export from the web vault. The check runs before the first
+mutation, so an abort always costs you nothing.
+
+**Practical advice:** export your vault from the **web vault or browser
+extension**, not from `bw export`. The guided `make setup` already points you at
+the web vault for exactly this reason.
+
 ## How matching works
 
 Entries group by **registrable domain + normalised username**:
@@ -247,10 +279,9 @@ rule blocks any unsafe collapse regardless.
 
 ## Known limits
 
-- **Attachments and passkeys cannot be moved.** They are not in the export
-  format. Items *holding* them are always preferred as the survivor, so they are
-  never the item deleted — but if you have attachments on a duplicate, move them
-  by hand first.
+- **Attachments are not in the export format** and cannot be moved. Items
+  holding them are not detectable, so if you keep attachments on a duplicate,
+  move them by hand before running this.
 - **Bitwarden Sends** are out of scope.
 - Chrome exports drop federated "Sign in with Google" entries (they contain no
   password); those rows are skipped rather than imported as empty items.

@@ -451,8 +451,12 @@ print(sum(1 for a in plan["actions"] if a["op"] in ("delete", "update")))' "$WOR
     else
         warn "$remaining item(s) still look duplicated."
         say "Report: $WORKDIR/check/report.md"
-        say "This is expected if you stopped the apply partway. Re-run 'make dedup'"
-        say "using $fresh as the vault export."
+        say "This is expected if you stopped the apply partway."
+        say ""
+        warn "To go again, re-export from the ${BOLD}web vault${RESET}, not this CLI export."
+        say "Some bw CLI versions write an empty fido2Credentials array"
+        say "(bitwarden/clients#6925), which would hide your passkeys from planning."
+        say "Replace $WORKDIR/vault.json with a fresh web-vault export, then 'make dedup'."
         exit 1
     fi
 }
