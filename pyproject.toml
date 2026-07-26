@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bwsync"
+version = "1.0.0"
+description = "Deduplicate a Bitwarden vault and merge in Apple Passwords / Chrome exports, offline."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+bwsync = "bwsync.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bwsync*"]
