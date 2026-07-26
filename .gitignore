@@ -11,6 +11,7 @@ out/
 plan.json
 *.bwexport
 *.enc
+.bwsync.conf
 
 __pycache__/
 *.py[cod]

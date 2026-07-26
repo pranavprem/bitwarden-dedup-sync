@@ -56,7 +56,43 @@ Step 7 deletes them.
 
 ---
 
-## The runbook
+## Quick start — the guided path
+
+Four commands, in order. Each one prompts for what it needs and explains what it
+is about to do.
+
+```bash
+make setup     # prerequisites, work directory, walks you through each export
+make dedup     # plan → review conflicts → dry run → apply
+make verify    # re-exports your vault and confirms no duplicates remain
+make shred     # securely destroys the plaintext export files
+```
+
+`make` on its own lists everything.
+
+- **`make setup`** checks Python and installs the Bitwarden CLI if you want it,
+  asks where to put your work directory (and refuses a cloud-synced location),
+  then walks you through exporting from Bitwarden, Apple and Chrome one at a
+  time — checking each file arrived, and offering to pull it out of `~/Downloads`
+  if the browser put it there.
+- **`make dedup`** finds your exports, runs the plan, shows you any conflicts
+  inline, offers to open the report, prints a full dry run, and only then asks
+  you to type `apply`. It prompts for your master password via the Bitwarden CLI
+  at the last moment; bwsync never sees it.
+- **`make verify`** re-exports your vault through the CLI and re-plans against
+  it. A clean vault reports zero changes. Do not decommission Apple or Chrome
+  until this passes.
+- **`make shred`** overwrites and deletes the plaintext exports, and reminds you
+  where stray copies hide.
+
+Nothing before `make dedup` touches your vault, and `make dedup` shows you
+everything it will do before asking for confirmation. You can stop at any prompt.
+
+The rest of this README is the manual equivalent, plus reference material.
+
+---
+
+## The manual runbook
 
 ### 1. Install prerequisites
 
