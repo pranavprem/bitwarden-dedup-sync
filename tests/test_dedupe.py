@@ -101,7 +101,7 @@ class TestKeeperSelection(unittest.TestCase):
         groups = build_groups(
             [
                 vault(0, "GitHub", "u", "pw", ["https://github.com"], totp="SEED"),
-                vault(1, "GitHub", "u", "pw", ["https://github.com"], has_passkey=True),
+                vault(1, "GitHub", "u", "pw", ["https://github.com"], passkey_ids=frozenset({"x"})),
             ]
         )
         self.assertEqual(groups[0].subgroups[0].keeper.item_id, "id1")

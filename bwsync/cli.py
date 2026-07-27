@@ -95,6 +95,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     print(f"  {stats['creates'] - stats['conflict_creates']} new logins to import")
     print(f"  {stats['conflict_creates']} conflicting logins filed for review")
     print(f"  {stats['conflict_groups']} identities have conflicting passwords")
+    if stats.get("passkey_holds"):
+        print(f"  {stats['passkey_holds']} duplicates kept — they hold a unique passkey")
     print()
     print(f"Plan:   {plan_path}")
     print(f"Report: {written['report']}")

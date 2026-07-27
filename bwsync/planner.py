@@ -35,6 +35,7 @@ class Plan:
     sources: dict[str, dict[str, str]]
     actions: list[dict[str, Any]] = field(default_factory=list)
     conflicts: list[dict[str, Any]] = field(default_factory=list)
+    passkey_holds: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=dict)
     options: dict[str, Any] = field(default_factory=dict)
 
@@ -47,6 +48,7 @@ class Plan:
                 "stats": self.stats,
                 "actions": self.actions,
                 "conflicts": self.conflicts,
+                "passkey_holds": self.passkey_holds,
             },
             indent=2,
             ensure_ascii=False,
@@ -82,6 +84,7 @@ def build_plan(
         "conflict_creates": 0,
         "note_card_deletes": 0,
         "already_in_vault": 0,
+        "passkey_holds": 0,
     }
 
     for group in groups:
@@ -91,6 +94,24 @@ def build_plan(
 
         for subgroup in group.subgroups:
             keeper = subgroup.keeper
+
+            # 0. Record copies spared for holding a passkey the keeper lacks.
+            for spared in subgroup.passkey_protected_members:
+                plan.passkey_holds.append(
+                    {
+                        "label": group.label,
+                        "name": spared.name,
+                        "item_id": spared.item_id,
+                        "kept_item_id": keeper.item_id,
+                        "unique_passkeys": len(spared.passkey_ids - keeper.passkey_ids),
+                        "reason": (
+                            "identical password, but holds a passkey the kept item does "
+                            "not — a passkey cannot be copied between items, so deleting "
+                            "this would destroy that credential"
+                        ),
+                    }
+                )
+                counts["passkey_holds"] += 1
 
             # 1. Collapse redundant vault copies. Safe: identical passwords.
             for redundant in subgroup.redundant_vault_members:

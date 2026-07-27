@@ -18,7 +18,7 @@ def bw_login(
     folder_id: str | None = None,
     revision: str = "2024-01-01T00:00:00.000Z",
     fields: list[dict] | None = None,
-    passkey: bool = False,
+    passkey: bool | str = False,
     deleted: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -35,7 +35,11 @@ def bw_login(
         "revisionDate": revision,
         "creationDate": revision,
         "login": {
-            "fido2Credentials": [{"credentialId": "x"}] if passkey else [],
+            "fido2Credentials": (
+                [{"credentialId": passkey if isinstance(passkey, str) else "x"}]
+                if passkey
+                else []
+            ),
             "uris": [{"match": None, "uri": u} for u in (uris or [])],
             "username": username,
             "password": password,

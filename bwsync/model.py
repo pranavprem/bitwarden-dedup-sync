@@ -46,7 +46,11 @@ class Credential:
     favorite: bool = False
     reprompt: int = 0
     fields: tuple[dict[str, Any], ...] = ()
-    has_passkey: bool = False
+    # credentialIds of any passkeys on this item. Identity matters, not just
+    # presence: re-importing a vault duplicates a passkey under the SAME
+    # credentialId (safe to collapse), whereas registering a site twice creates
+    # DIFFERENT credentialIds (two real credentials, must both be kept).
+    passkey_ids: frozenset[str] = frozenset()
     revision: datetime | None = None
     creation: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -54,6 +58,10 @@ class Credential:
     @property
     def ref(self) -> str:
         return f"{self.source}:{self.index}"
+
+    @property
+    def has_passkey(self) -> bool:
+        return bool(self.passkey_ids)
 
     @property
     def from_vault(self) -> bool:

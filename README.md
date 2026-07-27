@@ -282,17 +282,31 @@ must be JSON). A copy holding a passkey outranks every other signal except
 "already in the vault", so it is kept and its passkey-less duplicates are
 deleted — with their TOTP seeds, notes and URLs merged onto it first.
 
-**The guard.** That selection is only as good as the export. Some `bw export`
-versions write an **empty** `fido2Credentials` array even when passkeys exist
-([bitwarden/clients#6925](https://github.com/bitwarden/clients/issues/6925)) —
-which would make a passkey invisible to planning, let its item lose the
-tiebreak, and delete it.
+**Identity, not presence.** Re-importing a vault into itself duplicates a
+passkey under the **same** `credentialId` — those copies are one credential, and
+collapsing them loses nothing. Registering a site twice produces **different**
+`credentialId`s — those are two real credentials.
 
-So `apply` does not trust the export. Before making any change, it queries your
-**live vault** via `bw list items` for the real set of passkey-holding item IDs.
-If the plan would delete any of them, it aborts having changed nothing, and
-tells you to re-export from the web vault. The check runs before the first
-mutation, so an abort always costs you nothing.
+So a duplicate is only deletable when the item being kept already holds every
+`credentialId` it holds. A copy carrying a credential the keeper lacks is
+**spared**, and both items stay. A passkey's private key lives only on its own
+item and cannot be merged across items the way a TOTP seed can, so there is no
+way to collapse those without destroying something.
+
+Spared items appear in the report under *Duplicates kept because of passkeys*,
+with a count of how many unique passkeys each holds. To collapse them yourself,
+sign in to the site, decide which passkey you want, delete the other from the
+site's security settings, then re-run.
+
+**The guard.** `apply` re-checks against the **live vault** via `bw list items`
+before making any change: for every deletion it compares the doomed item's
+`credentialId`s against the kept item's, and aborts if any would survive
+nowhere. It runs before the first mutation, so an abort always costs nothing.
+
+(Some `bw export` versions write an empty `fido2Credentials` array —
+[bitwarden/clients#6925](https://github.com/bitwarden/clients/issues/6925) —
+which is a second reason the guard reads the live vault rather than the file,
+and why you should export from the web vault.)
 
 **Practical advice:** export your vault from the **web vault or browser
 extension**, not from `bw export`. The guided `make setup` already points you at

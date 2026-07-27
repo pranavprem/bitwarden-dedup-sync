@@ -23,7 +23,7 @@ class RecordingCli(BwCli):
         self.synced = 0
         # Default: vault holds no passkeys. Overridden per-test. Set here so the
         # suite never spawns a real `bw` subprocess.
-        self.passkey_item_ids = lambda: set()
+        self.passkey_map = lambda: {}
 
     def create_item(self, payload):
         self.created.append(payload)
@@ -289,14 +289,14 @@ class TestPasskeyGuard(PlanTestCase):
         self.assertTrue(doomed)
 
         cli = RecordingCli()
-        cli.passkey_item_ids = lambda: set(doomed)  # export under-reported it
+        cli.passkey_map = lambda: {i: {"pk-a"} for i in doomed}  # export under-reported it
         with self.assertRaises(ApplyError) as ctx:
             execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
 
         message = str(ctx.exception)
         self.assertIn("ABORTED", message)
         self.assertIn("passkey", message)
-        self.assertIn("bitwarden/clients#6925", message)
+        self.assertIn("does not have", message)
         # Nothing may have been mutated before the abort.
         self.assertEqual(cli.deleted, [])
         self.assertEqual(cli.created, [])
@@ -306,14 +306,63 @@ class TestPasskeyGuard(PlanTestCase):
         plan = self._plan_two_identical()
         kept = [a["kept_item_id"] for a in plan["actions"] if a["op"] == "delete"]
         cli = RecordingCli()
-        cli.passkey_item_ids = lambda: set(kept)
+        cli.passkey_map = lambda: {i: {"pk-a"} for i in kept}
         execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
         self.assertEqual(len(cli.deleted), 1)
 
     def test_unqueryable_vault_does_not_block_a_dry_run(self):
         plan = self._plan_two_identical()
         cli = RecordingCli()
-        cli.passkey_item_ids = lambda: None  # e.g. dry run with no session
+        cli.passkey_map = lambda: None  # e.g. dry run with no session
+        execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
+        self.assertEqual(len(cli.deleted), 1)
+
+    def test_same_credential_id_collapses(self):
+        """Re-importing a vault duplicates a passkey under the SAME credentialId.
+        Both copies are the one credential, so collapsing them loses nothing."""
+        plan = self.run_plan(
+            items=[
+                bw_login("a", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-1"),
+                bw_login("b", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-1"),
+            ]
+        )
+        self.assertEqual(len([a for a in plan["actions"] if a["op"] == "delete"]), 1)
+        self.assertEqual(plan["passkey_holds"], [])
+
+    def test_different_credential_ids_are_both_kept(self):
+        """Two genuinely distinct passkeys for one site. A passkey cannot be
+        copied between items, so neither copy may be deleted."""
+        plan = self.run_plan(
+            items=[
+                bw_login("a", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-1"),
+                bw_login("b", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-2"),
+            ]
+        )
+        self.assertEqual([a for a in plan["actions"] if a["op"] == "delete"], [])
+        self.assertEqual(len(plan["passkey_holds"]), 1)
+        self.assertEqual(plan["passkey_holds"][0]["unique_passkeys"], 1)
+        self.assertEqual(plan["stats"]["passkey_holds"], 1)
+
+    def test_passkeyless_copy_still_collapses_into_passkey_holder(self):
+        plan = self.run_plan(
+            items=[
+                bw_login("a", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-1"),
+                bw_login("b", "Coinbase", "u", "pw", ["https://coinbase.com"]),
+            ]
+        )
+        deletes = [a["item_id"] for a in plan["actions"] if a["op"] == "delete"]
+        self.assertEqual(deletes, ["b"])
+        self.assertEqual(plan["passkey_holds"], [])
+
+    def test_guard_allows_delete_when_keeper_holds_the_same_credential(self):
+        plan = self.run_plan(
+            items=[
+                bw_login("a", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-1"),
+                bw_login("b", "Coinbase", "u", "pw", ["https://coinbase.com"], passkey="cred-1"),
+            ]
+        )
+        cli = RecordingCli()
+        cli.passkey_map = lambda: {"a": {"cred-1"}, "b": {"cred-1"}}
         execute(plan, cli, Journal(self.dir / "j", enabled=False), echo=lambda _: None)
         self.assertEqual(len(cli.deleted), 1)
 

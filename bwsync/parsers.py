@@ -128,7 +128,7 @@ def parse_bitwarden_json(path: Path) -> tuple[list[Credential], list[NonLoginIte
                     favorite=bool(item.get("favorite")),
                     reprompt=int(item.get("reprompt") or 0),
                     fields=tuple(f for f in (item.get("fields") or []) if isinstance(f, dict)),
-                    has_passkey=bool(login.get("fido2Credentials")),
+                    passkey_ids=_passkey_ids(login),
                     revision=revision,
                     creation=parse_timestamp(item.get("creationDate")),
                     raw=item,
@@ -148,6 +148,24 @@ def parse_bitwarden_json(path: Path) -> tuple[list[Credential], list[NonLoginIte
             )
 
     return logins, others, folders
+
+
+def _passkey_ids(login: dict[str, Any]) -> frozenset[str]:
+    """credentialIds of the passkeys on a login item.
+
+    A credential with no id is given a synthetic one from its position so it can
+    never be mistaken for a copy of another passkey — unknown identity must read
+    as "distinct", never as "same".
+    """
+    credentials = login.get("fido2Credentials")
+    if not isinstance(credentials, list):
+        return frozenset()
+    ids = set()
+    for position, credential in enumerate(credentials):
+        if not isinstance(credential, dict):
+            continue
+        ids.add(_clean(credential.get("credentialId")) or f"__unidentified_{position}")
+    return frozenset(ids)
 
 
 def _non_login_hash(item: dict[str, Any]) -> str:

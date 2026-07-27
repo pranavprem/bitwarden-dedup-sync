@@ -119,8 +119,8 @@ class BwCli:
             args.append("--permanent")
         self.run(args)
 
-    def passkey_item_ids(self) -> set[str] | None:
-        """Item ids that hold a passkey, read from the LIVE vault.
+    def passkey_map(self) -> dict[str, set[str]] | None:
+        """item id -> set of passkey credentialIds, read from the LIVE vault.
 
         Deliberately not taken from the export file. `bw export` has shipped
         versions that emit an empty `fido2Credentials` array even when passkeys
@@ -140,13 +140,21 @@ class BwCli:
             items = json.loads(raw)
         except json.JSONDecodeError:
             return None
-        found: set[str] = set()
+        found: dict[str, set[str]] = {}
         for item in items:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or not item.get("id"):
                 continue
             login = item.get("login")
-            if isinstance(login, dict) and login.get("fido2Credentials") and item.get("id"):
-                found.add(item["id"])
+            if not isinstance(login, dict):
+                continue
+            credentials = login.get("fido2Credentials")
+            if not isinstance(credentials, list) or not credentials:
+                continue
+            found[item["id"]] = {
+                (c.get("credentialId") or f"__unidentified_{position}")
+                for position, c in enumerate(credentials)
+                if isinstance(c, dict)
+            }
         return found
 
     def list_folders(self) -> dict[str, str]:
@@ -255,50 +263,61 @@ def _login_payload(cred: Credential, uris: list[str], folder_id: str | None) -> 
 def preflight_passkey_guard(
     plan: dict[str, Any], cli: BwCli, echo: Callable[[str], None] = print
 ) -> None:
-    """Refuse to delete any item that the live vault says holds a passkey.
+    """Refuse to delete a passkey the kept item does not also hold.
 
-    Runs before the first mutation, so a mismatch costs nothing. A hit means the
-    export used for planning under-reported passkeys, which invalidates the
-    keeper choice for that whole group — so this aborts rather than silently
-    skipping the delete and continuing with a plan we no longer trust.
+    Compares passkey *identity* against the live vault, not mere presence.
+    Duplicating a vault by re-import copies a passkey under the same
+    credentialId, so collapsing those is safe; only a credentialId that would
+    survive nowhere else is worth aborting over. Runs before the first mutation,
+    so an abort costs nothing.
     """
-    deletes = {
-        action["item_id"]: action
+    deletes = [
+        action
         for action in plan["actions"]
         if action["op"] == "delete" and action.get("item_id")
-    }
+    ]
     if not deletes:
         return
 
-    live_passkeys = cli.passkey_item_ids()
-    if live_passkeys is None:
+    live = cli.passkey_map()
+    if live is None:
         echo(
             "  note: could not query the live vault for passkeys; skipping that "
             "cross-check (it runs for real during --confirm)."
         )
         return
 
-    hits = [deletes[item_id] for item_id in deletes if item_id in live_passkeys]
+    hits = []
+    for action in deletes:
+        doomed = live.get(action["item_id"])
+        if not doomed:
+            continue
+        kept = live.get(action.get("kept_item_id") or "", set())
+        orphaned = doomed - kept
+        if orphaned:
+            hits.append((action, len(orphaned)))
+
+    total_passkeys = sum(len(ids) for ids in live.values())
     if not hits:
-        echo(f"  passkey cross-check passed ({len(live_passkeys)} passkey item(s) in vault).")
+        echo(f"  passkey cross-check passed ({total_passkeys} passkey(s) in vault).")
         return
 
     listed = "\n".join(
-        f"    {action['item_id']}  {action['name'] or '(unnamed)'}  [{action['label']}]"
-        for action in hits[:10]
+        f"    {action['item_id']}  {action['name'] or '(unnamed)'}  "
+        f"[{action['label']}]  ({count} passkey(s) found nowhere else)"
+        for action, count in hits[:10]
     )
     more = f"\n    …and {len(hits) - 10} more" if len(hits) > 10 else ""
     raise ApplyError(
-        f"ABORTED — the plan would delete {len(hits)} item(s) that hold a passkey "
-        f"in your live vault:\n{listed}{more}\n\n"
+        f"ABORTED — the plan would delete {len(hits)} item(s) holding a passkey that "
+        f"the item being kept does not have:\n{listed}{more}\n\n"
         f"Nothing has been changed.\n\n"
-        f"This means the export used for planning did not report those passkeys, so "
-        f"the wrong copy was chosen to keep. Known cause: `bw export` has shipped "
-        f"versions that write an empty fido2Credentials array "
-        f"(bitwarden/clients#6925).\n\n"
-        f"Fix: re-export your vault from the WEB VAULT or BROWSER EXTENSION rather "
-        f"than the CLI (Tools -> Export vault, .json, no file password), then re-run "
-        f"`bwsync plan` and review the new plan."
+        f"A passkey's private key exists only on its own item and cannot be copied "
+        f"onto another, so these deletions would destroy working credentials.\n\n"
+        f"Your live vault disagrees with the export used for planning. Re-export from "
+        f"your web vault (Tools -> Export vault, .json, no file password) and re-run "
+        f"`bwsync plan`; the planner spares items like these automatically, so a plan "
+        f"built from an up-to-date export should not trip this."
     )
 
 

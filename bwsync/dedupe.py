@@ -59,8 +59,29 @@ class PasswordSubgroup:
 
     @property
     def redundant_vault_members(self) -> list[Credential]:
+        """Vault copies safe to delete.
+
+        A copy is only redundant if the keeper already holds every passkey it
+        holds. A passkey's private key exists nowhere else and cannot be merged
+        across items, so a copy carrying a credentialId the keeper lacks is a
+        real credential that would be destroyed — it stays.
+        """
         keeper = self.keeper
-        return [c for c in self.vault_members if c is not keeper]
+        return [
+            c
+            for c in self.vault_members
+            if c is not keeper and c.passkey_ids <= keeper.passkey_ids
+        ]
+
+    @property
+    def passkey_protected_members(self) -> list[Credential]:
+        """Vault copies spared because they hold passkeys the keeper does not."""
+        keeper = self.keeper
+        return [
+            c
+            for c in self.vault_members
+            if c is not keeper and not (c.passkey_ids <= keeper.passkey_ids)
+        ]
 
 
 @dataclass
@@ -94,7 +115,9 @@ def _keeper_score(cred: Credential) -> tuple:
     """
     return (
         1 if cred.from_vault else 0,
-        1 if cred.has_passkey else 0,
+        # Count, not a flag: keeping the copy with the most passkeys minimises
+        # how many siblings have to be spared for holding a unique one.
+        len(cred.passkey_ids),
         1 if cred.totp else 0,
         1 if cred.notes else 0,
         len(cred.fields),

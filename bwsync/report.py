@@ -48,6 +48,7 @@ def render_markdown(plan: Plan) -> str:
     add(f"| New logins imported | {stats['creates'] - stats['conflict_creates']} |")
     add(f"| Conflicting logins filed under `{CONFLICT_FOLDER}` | {stats['conflict_creates']} |")
     add(f"| Imports already present in the vault (skipped) | {stats['already_in_vault']} |")
+    add(f"| Duplicates spared because they hold a unique passkey | {stats.get('passkey_holds', 0)} |")
     add("")
     add(
         f"Grouped **{_plural(stats['groups'], 'distinct site+username identity', 'distinct site+username identities')}**, "
@@ -66,6 +67,26 @@ def render_markdown(plan: Plan) -> str:
     add("- Conflicts are never auto-resolved. Every distinct password survives, either in")
     add(f"  place or as a new item under `{CONFLICT_FOLDER}`.")
     add("")
+
+    if plan.passkey_holds:
+        add("## Duplicates kept because of passkeys")
+        add("")
+        add("These have the same site, username and password as the item being kept,")
+        add("but carry a **different passkey** — a separate credential registered with")
+        add("the site. A passkey's private key cannot be copied between items, so")
+        add("deleting these would destroy working credentials. They are left alone.")
+        add("")
+        add("To collapse them yourself, sign in to the site, confirm which passkey you")
+        add("want, delete the other from the site's security settings, then re-run.")
+        add("")
+        add("| Item kept as duplicate | Identity | Unique passkeys | Merged into |")
+        add("|---|---|---|---|")
+        for hold in sorted(plan.passkey_holds, key=lambda h: h["label"]):
+            add(
+                f"| {hold['name'] or '—'} | {hold['label']} | {hold['unique_passkeys']} "
+                f"| `{(hold['kept_item_id'] or '—')[:8]}` |"
+            )
+        add("")
 
     if plan.conflicts:
         add("## Conflicts needing your decision")
