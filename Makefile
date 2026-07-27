@@ -13,7 +13,7 @@
 SHELL := /bin/bash
 GUIDED := scripts/guided.sh
 
-.PHONY: help setup dedup verify shred plan test install clean
+.PHONY: help setup dedup verify shred server plan test install clean
 
 help:
 	@echo ""
@@ -26,6 +26,7 @@ help:
 	@echo "    make shred     Securely delete the plaintext export files"
 	@echo ""
 	@echo "  Also available:"
+	@echo "    make server    Point the CLI at your vault (self-hosted or Vaultwarden)"
 	@echo "    make plan      Re-run planning only, without the guided prompts"
 	@echo "    make test      Run the test suite"
 	@echo "    make install   Install the 'bwsync' command into your environment"
@@ -46,6 +47,9 @@ verify:
 
 shred:
 	@bash $(GUIDED) shred
+
+server:
+	@bash $(GUIDED) server
 
 # Escape hatch for re-planning with custom flags:
 #   make plan ARGS="--vault ~/w/vault.json --chrome ~/w/chrome.csv --out ~/w/out"

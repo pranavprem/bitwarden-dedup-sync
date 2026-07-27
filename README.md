@@ -72,10 +72,13 @@ make verify    # re-exports your vault and confirms no duplicates remain
 make shred     # securely destroys the plaintext export files
 ```
 
-`make` on its own lists everything.
+`make` on its own lists everything. `make server` re-points the CLI at a
+different vault later.
 
 - **`make setup`** checks Python and installs the Bitwarden CLI if you want it,
-  asks where to put your work directory (and refuses a cloud-synced location),
+  asks for **your vault's URL** (self-hosted Bitwarden and Vaultwarden both work
+  — see below), asks where to put your work directory (and refuses a
+  cloud-synced location),
   then walks you through exporting from Bitwarden, Apple and Chrome one at a
   time — checking each file arrived, and offering to pull it out of `~/Downloads`
   if the browser put it there.
@@ -103,6 +106,9 @@ The rest of this README is the manual equivalent, plus reference material.
 ```bash
 brew install bitwarden-cli     # or: npm install -g @bitwarden/cli
 git clone <this repo> && cd bitwarden-dedup-sync
+
+# Self-hosted Bitwarden or Vaultwarden — must precede `bw login`:
+bw config server https://vault.example.com
 ```
 
 No `pip install` is needed; run it as `python3 -m bwsync`. (`pip install -e .`
@@ -123,8 +129,9 @@ mkdir -p ~/pwork && chmod 700 ~/pwork && cd ~/pwork
 **Bitwarden** (must be JSON — a CSV has no item IDs, so the vault cannot be
 deduplicated in place):
 
-- Web vault → Tools → Export vault → File format **.json** →
-  *File password* left **empty** → Export vault.
+- Your web vault (`https://vault.example.com` if self-hosted) → Tools →
+  Export vault → File format **.json** → *File password* left **empty** →
+  Export vault.
 - Save as `~/pwork/vault.json`. **Keep this file until you are finished** — it
   is your rollback.
 
@@ -227,6 +234,41 @@ may have been backed up between step 3 and now.
 Deleted items sit in the Bitwarden **Trash** (web vault → Trash → Restore).
 If something has gone badly wrong, `~/pwork/vault.json` from step 3 is a
 complete snapshot of the vault before any change.
+
+## Self-hosted Bitwarden and Vaultwarden
+
+Fully supported. Vaultwarden implements the Bitwarden API, so the `bw` CLI, the
+web vault export, and the export format are all identical — nothing about the
+deduplication logic changes.
+
+`make setup` asks for your vault's URL and configures the CLI for you. Manually,
+it is:
+
+```bash
+bw config server https://vault.example.com    # BEFORE bw login
+bw login
+```
+
+The server must be set before logging in, and switching servers requires
+`bw logout` first — `make setup` and `make server` both handle that.
+
+**The mismatch guard.** Before unlocking, the tooling compares the server the
+CLI is actually pointed at against the one recorded for this project, and
+refuses to continue if they differ. This matters more than it sounds: applying a
+plan to the wrong vault would silently no-op every delete (the item IDs would
+not exist there) while every **create succeeded** — copying your entire
+credential set into a vault it does not belong in. If you have never run
+`make setup`, it shows you which server the CLI is pointed at and makes you
+confirm.
+
+Two Vaultwarden-specific notes:
+
+- Export from your **web vault** (`https://vault.example.com` → Tools → Export
+  vault → `.json`, no file password), not from `bw export` — see *Passkeys*
+  below for why.
+- Passkey storage requires a reasonably recent Vaultwarden. If your instance
+  predates passkey support you simply have none to preserve, and the passkey
+  guard is a no-op.
 
 ## Passkeys
 

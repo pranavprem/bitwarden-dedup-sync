@@ -84,9 +84,39 @@ pause() { printf '\n%sPress Enter when done…%s' "$DIM" "$RESET"; read -r _ </d
 load_conf() { [ -f "$CONF" ] && . "$CONF" || true; }
 
 save_conf() {
-    # %q so a path containing spaces survives being sourced back in.
-    printf '# Written by `make setup`. Paths only — never secrets.\nWORKDIR=%q\n' "$1" > "$CONF"
+    # %q so values containing spaces survive being sourced back in.
+    {
+        printf '# Written by `make setup`. Paths and URLs only — never secrets.\n'
+        printf 'WORKDIR=%q\n' "${WORKDIR:-}"
+        printf 'SERVER=%q\n' "${SERVER:-}"
+    } > "$CONF"
     chmod 600 "$CONF"
+}
+
+# --------------------------------------------------------------------------
+# Bitwarden CLI state
+# --------------------------------------------------------------------------
+
+CLOUD_SERVER="https://vault.bitwarden.com"
+
+# Read one field out of `bw status`, tolerating a missing/locked/broken CLI.
+bw_status_field() {
+    bw status 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get(sys.argv[1]) or "")
+except Exception:
+    print("")' "$1" 2>/dev/null || printf ''
+}
+
+bw_state()  { bw_status_field status; }
+
+# The server the CLI is currently pointed at. Cloud may report empty.
+bw_server() {
+    local url
+    url="$(bw_status_field serverUrl)"
+    [ -z "$url" ] && url="$CLOUD_SERVER"
+    printf '%s' "${url%/}"
 }
 
 require_workdir() {
@@ -136,6 +166,84 @@ check_bw() {
         return 0
     fi
     have bw && good "Bitwarden CLI installed." || true
+}
+
+# Point the CLI at the right vault. Must happen before `bw login`, and switching
+# servers requires logging out of the current one first.
+configure_server() {
+    have bw || { note "Skipping server setup until the CLI is installed."; return 0; }
+
+    heading "Which vault?"
+    say "Self-hosted Bitwarden and Vaultwarden both work — Vaultwarden implements"
+    say "the same API, so the CLI and the export format are identical."
+    say ""
+    say "  Self-hosted example:  https://vault.example.com"
+    say "  Official cloud:       $CLOUD_SERVER"
+
+    local current suggested
+    current="$(bw_server)"
+    load_conf
+    suggested="${SERVER:-$current}"
+
+    while true; do
+        ask SERVER "Your vault's URL:" "$suggested"
+        SERVER="${SERVER%/}"
+        case "$SERVER" in
+            https://*) break ;;
+            http://*)
+                warn "That is plain HTTP — your vault traffic would be unencrypted."
+                confirm "Really use $SERVER?" no && break ;;
+            *)  warn "Please enter a full URL starting with https://" ;;
+        esac
+    done
+
+    if [ "$current" = "$SERVER" ]; then
+        good "CLI already pointed at $SERVER"
+        return 0
+    fi
+
+    local state
+    state="$(bw_state)"
+    if [ -n "$state" ] && [ "$state" != "unauthenticated" ]; then
+        warn "The CLI is logged in to $current."
+        say "Switching servers requires logging out of that one first."
+        confirm "Log out of $current and switch to $SERVER?" yes \
+            || die "Left pointed at $current. Re-run 'make setup' when ready."
+        bw logout >/dev/null 2>&1 || true
+    fi
+
+    bw config server "$SERVER" >/dev/null \
+        || die "Could not configure the CLI for $SERVER. Check the URL is reachable."
+    good "CLI configured for $SERVER"
+}
+
+# Refuse to act on a vault other than the configured one. Without this, a plan
+# built from one vault's export could be applied to another: the deletes would
+# silently no-op (item IDs would not match) while the creates would succeed,
+# copying every credential into the wrong vault.
+assert_correct_server() {
+    load_conf
+    local actual
+    actual="$(bw_server)"
+
+    if [ -z "${SERVER:-}" ]; then
+        warn "No vault URL is recorded for this project (run 'make setup')."
+        say  "The CLI is currently pointed at: ${BOLD}$actual${RESET}"
+        confirm "Continue against $actual?" no || die "Stopped. Run 'make setup'."
+        return 0
+    fi
+
+    if [ "$actual" != "${SERVER%/}" ]; then
+        die "The Bitwarden CLI is pointed at:
+    $actual
+but your configured vault is:
+    ${SERVER%/}
+
+Refusing to continue — applying a plan to the wrong vault would copy your
+credentials into it. Fix with 'make setup', or:
+    bw logout && bw config server ${SERVER%/}"
+    fi
+    good "Talking to $actual"
 }
 
 # Plaintext password exports must not land somewhere that syncs them to a server.
@@ -209,6 +317,7 @@ cmd_setup() {
     heading "Prerequisites"
     check_python
     check_bw
+    configure_server
 
     heading "Work directory"
     say "This holds your plaintext exports until step 'make shred' destroys them."
@@ -235,7 +344,7 @@ cmd_setup() {
     done
     mkdir -p "$WORKDIR"
     chmod 700 "$WORKDIR"
-    save_conf "$WORKDIR"
+    save_conf
     good "Using $WORKDIR (owner-only, mode 700)."
 
     heading "Exports"
@@ -244,7 +353,7 @@ cmd_setup() {
     say "machine and are destroyed at the end by 'make shred'.${RESET}"
 
     guided_export "Bitwarden" "vault.json" yes \
-        "1. Open the web vault: https://vault.bitwarden.com" \
+        "1. Open your web vault: ${SERVER:-$CLOUD_SERVER}" \
         "2. Tools → Export vault" \
         "3. File format: ${BOLD}.json${RESET}   (NOT .csv — a CSV has no item IDs," \
         "   so your vault could not be deduplicated in place)" \
@@ -303,12 +412,13 @@ resolve_source() {
 
 unlock_vault() {
     have bw || die "The Bitwarden CLI (bw) is not installed. Run 'make setup'."
+    assert_correct_server
 
     local status
-    status="$(bw status 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || echo "")"
+    status="$(bw_state)"
 
     if [ "$status" = "unauthenticated" ] || [ -z "$status" ]; then
-        heading "Log in to Bitwarden"
+        heading "Log in to ${SERVER:-your vault}"
         say "The CLI will prompt you directly. bwsync never sees your master password."
         bw login </dev/tty
         status="locked"
@@ -319,7 +429,7 @@ unlock_vault() {
         return 0
     fi
 
-    heading "Unlock Bitwarden"
+    heading "Unlock ${SERVER:-your vault}"
     say "The CLI will prompt for your master password. bwsync never sees or stores it;"
     say "it only inherits the session key the CLI hands back."
     # Assigned, never echoed, never written to disk.
@@ -453,7 +563,7 @@ print(sum(1 for a in plan["actions"] if a["op"] in ("delete", "update")))' "$WOR
         say "Report: $WORKDIR/check/report.md"
         say "This is expected if you stopped the apply partway."
         say ""
-        warn "To go again, re-export from the ${BOLD}web vault${RESET}, not this CLI export."
+        warn "To go again, re-export from ${BOLD}${SERVER:-your web vault}${RESET}, not this CLI export."
         say "Some bw CLI versions write an empty fido2Credentials array"
         say "(bitwarden/clients#6925), which would hide your passkeys from planning."
         say "Replace $WORKDIR/vault.json with a fresh web-vault export, then 'make dedup'."
@@ -502,5 +612,6 @@ case "${1:-}" in
     dedup)  cmd_dedup ;;
     verify) cmd_verify ;;
     shred)  cmd_shred ;;
-    *)      die "Unknown command '${1:-}'. Use: setup | dedup | verify | shred" ;;
+    server) configure_server; save_conf; say ""; good "Saved. Vault: ${SERVER:-unset}" ;;
+    *)      die "Unknown command '${1:-}'. Use: setup | dedup | verify | shred | server" ;;
 esac
